@@ -1,0 +1,19 @@
+2026-07-06 22:48:12,726 INFO    MainThread:28752 [wandb_setup.py:_flush():81] Current SDK version is 0.28.0
+2026-07-06 22:48:12,727 INFO    MainThread:28752 [wandb_setup.py:_flush():81] Configure stats pid to 28752
+2026-07-06 22:48:12,727 INFO    MainThread:28752 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-07-06 22:48:12,727 INFO    MainThread:28752 [wandb_init.py:setup_run_log_directory():725] Logging user logs to D:\Bar-Eden\wandb\offline-run-20260706_224812-iwes0qqq\logs\debug.log
+2026-07-06 22:48:12,727 INFO    MainThread:28752 [wandb_init.py:setup_run_log_directory():726] Logging internal logs to D:\Bar-Eden\wandb\offline-run-20260706_224812-iwes0qqq\logs\debug-internal.log
+2026-07-06 22:48:12,727 INFO    MainThread:28752 [wandb_init.py:init():768] calling init triggers
+2026-07-06 22:48:12,728 INFO    MainThread:28752 [wandb_init.py:init():773] wandb.init called with sweep_config: {}
+config: {'_wandb': {}}
+2026-07-06 22:48:12,728 INFO    MainThread:28752 [wandb_init.py:init():816] starting backend
+2026-07-06 22:48:15,400 INFO    MainThread:28752 [wandb_init.py:init():831] sending inform_init request
+2026-07-06 22:48:15,620 INFO    MainThread:28752 [wandb_init.py:init():836] backend started and connected
+2026-07-06 22:48:15,647 INFO    MainThread:28752 [wandb_init.py:init():906] updated telemetry
+2026-07-06 22:48:15,692 INFO    MainThread:28752 [wandb_init.py:init():929] communicating run to backend with 90.0 second timeout
+2026-07-06 22:48:15,699 INFO    MainThread:28752 [wandb_init.py:init():974] starting run threads in backend
+2026-07-06 22:48:15,825 INFO    MainThread:28752 [wandb_run.py:_console_start():2523] atexit reg
+2026-07-06 22:48:15,825 INFO    MainThread:28752 [wandb_run.py:_redirect():2373] redirect: wrap_raw
+2026-07-06 22:48:15,825 INFO    MainThread:28752 [wandb_run.py:_redirect():2442] Wrapping output streams.
+2026-07-06 22:48:15,825 INFO    MainThread:28752 [wandb_run.py:_redirect():2465] Redirects installed.
+2026-07-06 22:48:15,830 INFO    MainThread:28752 [wandb_init.py:init():1012] run started, returning control to user process

@@ -1,17 +1,12 @@
 """
-Plotting and evaluation utilities for the Act 1.2 models.
+Plotting and evaluation utilities for the Modular Transformer models.
 
 PLOT_BASE is the root directory; every plotting function takes a
 model_name argument that creates a subfolder:
     D:\\Bar-Eden\\Act 1\\Act 1.2 Transformer\\Plots\\<model_name>\\
 
-get_named_parameters / get_parameter_groups walk any Act 1.2 model
-and return human-readable names grouped by role:
-    Embedding + Pos Enc | Block N Attention | Block N FFN |
-    LayerNorms | Output (W_out)
-
-Supports both the current fused-attention + weight-tied Transformer
-and the museum models (loop-over-heads, separate LMHead).
+get_named_parameters / get_parameter_groups walk any modular model
+and return human-readable names grouped by role.
 
 All plots save automatically and close the figure (no plt.show()).
 """
@@ -22,7 +17,7 @@ from collections import OrderedDict
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-import barkeep_style as bks
+import src.barkeep_style as bks
 
 bks.apply_style()
 
@@ -48,18 +43,8 @@ def _save(fig, filename, model_name=None, save_path=None):
 
 def get_named_parameters(model):
     """
-    Walk a model and return [(name, param)] in the same order as
+    Walk the modular model and return [(name, param)] in the same order as
     model.parameters().
-
-    Handles both:
-      - Current Transformer (fused attention, weight-tied, no LMHead)
-      - Museum models (loop-over-heads, separate LMHead)
-
-    Names are human-readable:
-        embedding, pos_enc,
-        b0_W_Q, b0_W_K, b0_W_V, b0_W_out,
-        b0_ln1_γ, b0_ln1_β, b0_ffn_up_w, b0_ffn_up_b, ...
-        ln_f_γ, ln_f_β
     """
     named = []
 
@@ -67,80 +52,52 @@ def get_named_parameters(model):
     named.append(("embedding", model.embedding.embedding_matrix))
 
     # ── positional encoding ──
-    if hasattr(model, "positional_encoding"):
-        named.append(("pos_enc", model.positional_encoding.positional_encoding_matrix))
+    if hasattr(model.positional, "positional_encoding_matrix"):
+        named.append(("pos_enc", model.positional.positional_encoding_matrix))
 
     # ── stacked blocks ──
-    blocks = getattr(model, "blocks", None)
-    if blocks is None and hasattr(model, "block"):
-        blocks = [model.block]
-
-    if blocks is not None:
-        for bi, block in enumerate(blocks):
+    if hasattr(model, "blocks"):
+        for bi, block in enumerate(model.blocks):
             prefix = f"b{bi}"
-            mha = block.multihead
+            
+            # Attention
+            attn = block.attention
+            named.append((f"{prefix}_W_Q", attn.query_weight.weight))
+            named.append((f"{prefix}_W_K", attn.key_weight.weight))
+            named.append((f"{prefix}_W_V", attn.value_weight.weight))
+            named.append((f"{prefix}_W_out", attn.out_weight.weight))
 
-            # fused attention (current): W_Query, W_Key, W_Value, W_out
-            if hasattr(mha, "W_Query"):
-                named.append((f"{prefix}_W_Q", mha.W_Query.weight))
-                named.append((f"{prefix}_W_K", mha.W_Key.weight))
-                named.append((f"{prefix}_W_V", mha.W_Value.weight))
-                named.append((f"{prefix}_W_out", mha.W_out.weight))
-            # museum: loop-over-heads
-            elif hasattr(mha, "heads"):
-                for hi, head in enumerate(mha.heads):
-                    named.append((f"{prefix}_h{hi}_Q", head.W_Query.weight))
-                    named.append((f"{prefix}_h{hi}_K", head.W_Key.weight))
-                    named.append((f"{prefix}_h{hi}_V", head.W_Value.weight))
-                named.append((f"{prefix}_W_out", mha.W_out.weight))
+            # Norm 1
+            named.append((f"{prefix}_norm1_γ", block.norm1.gamma))
+            if block.norm1.beta is not None:
+                named.append((f"{prefix}_norm1_β", block.norm1.beta))
 
-            # ln1
-            named.append((f"{prefix}_ln1_γ", block.ln1.gamma))
-            named.append((f"{prefix}_ln1_β", block.ln1.beta))
+            # FFN
+            ffn = block.feedforward
+            if hasattr(ffn, "weight_gate"):
+                named.append((f"{prefix}_ffn_gate_w", ffn.weight_gate.weight))
+                if ffn.weight_gate.bias is not None:
+                    named.append((f"{prefix}_ffn_gate_b", ffn.weight_gate.bias))
+                    
+            named.append((f"{prefix}_ffn_up_w", ffn.weight_up.weight))
+            if ffn.weight_up.bias is not None:
+                named.append((f"{prefix}_ffn_up_b", ffn.weight_up.bias))
+                
+            named.append((f"{prefix}_ffn_down_w", ffn.weight_down.weight))
+            if ffn.weight_down.bias is not None:
+                named.append((f"{prefix}_ffn_down_b", ffn.weight_down.bias))
 
-            # ffn
-            named.append((f"{prefix}_ffn_up_w", block.ffn.linear1.weight))
-            if block.ffn.linear1.bias is not None:
-                named.append((f"{prefix}_ffn_up_b", block.ffn.linear1.bias))
-            named.append((f"{prefix}_ffn_down_w", block.ffn.linear2.weight))
-            if block.ffn.linear2.bias is not None:
-                named.append((f"{prefix}_ffn_down_b", block.ffn.linear2.bias))
-
-            # ln2
-            named.append((f"{prefix}_ln2_γ", block.ln2.gamma))
-            named.append((f"{prefix}_ln2_β", block.ln2.beta))
-
-    # ── flat models (no blocks) ──
-    elif hasattr(model, "multihead"):
-        mha = model.multihead
-        if hasattr(mha, "W_Query"):
-            named.append(("W_Q", mha.W_Query.weight))
-            named.append(("W_K", mha.W_Key.weight))
-            named.append(("W_V", mha.W_Value.weight))
-            named.append(("W_out", mha.W_out.weight))
-        elif hasattr(mha, "heads"):
-            for hi, head in enumerate(mha.heads):
-                named.append((f"h{hi}_Q", head.W_Query.weight))
-                named.append((f"h{hi}_K", head.W_Key.weight))
-                named.append((f"h{hi}_V", head.W_Value.weight))
-            named.append(("W_out", mha.W_out.weight))
-
-        if hasattr(model, "ffn"):
-            named.append(("ffn_up_w", model.ffn.linear1.weight))
-            if model.ffn.linear1.bias is not None:
-                named.append(("ffn_up_b", model.ffn.linear1.bias))
-            named.append(("ffn_down_w", model.ffn.linear2.weight))
-            if model.ffn.linear2.bias is not None:
-                named.append(("ffn_down_b", model.ffn.linear2.bias))
-
-    # ── lm head (museum models only — current uses weight tying) ──
-    if hasattr(model, "lmhead"):
-        named.append(("lm_head", model.lmhead.W_projection.weight))
+            # Norm 2
+            if block.norm2 is not None:
+                named.append((f"{prefix}_norm2_γ", block.norm2.gamma))
+                if block.norm2.beta is not None:
+                    named.append((f"{prefix}_norm2_β", block.norm2.beta))
 
     # ── final layer norm ──
-    if hasattr(model, "ln"):
-        named.append(("ln_f_γ", model.ln.gamma))
-        named.append(("ln_f_β", model.ln.beta))
+    if hasattr(model, "final_norm"):
+        named.append(("ln_f_γ", model.final_norm.gamma))
+        if model.final_norm.beta is not None:
+            named.append(("ln_f_β", model.final_norm.beta))
 
     return named
 
@@ -148,43 +105,24 @@ def get_named_parameters(model):
 def get_parameter_groups(named_params):
     """
     Group named parameters by architectural role.
-
-    Returns OrderedDict:
-        "Embedding + Pos Enc"      -> [(name, param), ...]
-        "Block 0 Attention"        -> [(name, param), ...]  (fused)
-        "Block 0 Head 0"           -> [(name, param), ...]  (museum)
-        "Block 0 FFN"              -> [(name, param), ...]
-        "LayerNorms"               -> [(name, param), ...]
-        "Output (W_out)"           -> [(name, param), ...]
     """
     groups = OrderedDict()
 
     for name, param in named_params:
         if name in ("embedding", "pos_enc"):
             group = "Embedding + Pos Enc"
-        elif name.endswith(("_W_Q", "_W_K", "_W_V")):
-            # fused: b0_W_Q -> "Block 0 Attention"
+        elif name.endswith(("_W_Q", "_W_K", "_W_V", "_W_out")) and "ffn" not in name:
             if name.startswith("b"):
                 group = f"Block {name[1]} Attention"
             else:
                 group = "Attention"
-        elif "_h" in name and ("_Q" in name or "_K" in name or "_V" in name):
-            # museum per-head: b0_h2_Q -> "Block 0 Head 2"
-            if name.startswith("b"):
-                parts = name.split("_")
-                group = f"Block {parts[0][1:]} Head {parts[1][1:]}"
-            else:
-                parts = name.split("_")
-                group = f"Head {parts[0][1:]}"
         elif "ffn" in name:
             if name.startswith("b"):
                 group = f"Block {name[1]} FFN"
             else:
                 group = "FFN"
-        elif "ln" in name:
+        elif "norm" in name or "ln_f" in name:
             group = "LayerNorms"
-        elif "W_out" in name or "lm_head" in name:
-            group = "Output (W_out)"
         else:
             group = "Other"
 
@@ -198,12 +136,7 @@ def get_parameter_groups(named_params):
 # ═══════════════════════════════════════════════════════════════
 
 def load_runs(log_path):
-    """
-    Read a JSONL log and group "metric" records by run_name.
-
-    Returns {run_name: {"steps": [...], "train_loss": [...],
-    "dev_loss": [...], "lr": [...]}}
-    """
+    """Read a JSONL log and group metric records by run_name."""
     runs = {}
     with open(log_path) as f:
         for line in f:
@@ -224,7 +157,6 @@ def load_runs(log_path):
 
 
 def plot_run_comparison(runs, metric="dev_loss", model_name=None, save_path=None):
-    """Overlay `metric` across multiple runs."""
     fig, ax = plt.subplots(figsize=(10, 5))
     palette = [bks.COLORS["amber"], bks.COLORS["red"],
                bks.COLORS["teal"], bks.COLORS["violet"]]
@@ -246,7 +178,6 @@ def plot_run_comparison(runs, metric="dev_loss", model_name=None, save_path=None
 # ═══════════════════════════════════════════════════════════════
 
 def plot_training_curve(results, title="Training Loss", model_name=None, save_path=None):
-    """Full per-step training loss (smoothed) + dev-loss checkpoints."""
     loss_per_itrn = results["loss_per_itrn"]
     dev_itrns = results["dev_itrns"]
     dev_losses = results["dev_losses"]
@@ -281,7 +212,6 @@ def plot_training_curve(results, title="Training Loss", model_name=None, save_pa
 
 
 def plot_lr_schedule(results, model_name=None, save_path=None):
-    """Plot the learning-rate schedule."""
     lr_per_itrn = results["lr_per_itrn"]
     fig, ax = plt.subplots(figsize=(10, 3))
     ax.plot(range(len(lr_per_itrn)), lr_per_itrn,
@@ -294,7 +224,6 @@ def plot_lr_schedule(results, model_name=None, save_path=None):
 
 
 def plot_train_vs_dev(results, model_name=None, save_path=None):
-    """Bar chart: train loss (avg of 5K steps before checkpoint) vs dev."""
     loss_per_itrn = results["loss_per_itrn"]
     dev_itrns = results["dev_itrns"]
     dev_losses = results["dev_losses"]
@@ -325,7 +254,6 @@ def plot_train_vs_dev(results, model_name=None, save_path=None):
 # ═══════════════════════════════════════════════════════════════
 
 def evaluate(model, data, name=""):
-    """Cross-entropy loss under no_grad."""
     with torch.no_grad():
         logits = model(data.inputs)
         loss = torch.nn.functional.cross_entropy(
@@ -337,7 +265,6 @@ def evaluate(model, data, name=""):
 
 
 def evaluate_all(model, trn, dev, test):
-    """Evaluate on train, dev, test splits."""
     return {
         "train": evaluate(model, trn, "train"),
         "dev": evaluate(model, dev, "dev"),
@@ -350,7 +277,6 @@ def evaluate_all(model, trn, dev, test):
 # ═══════════════════════════════════════════════════════════════
 
 def weight_histogram(model, bins=50, model_name=None, save_path=None):
-    """Histogram of all weights flattened together."""
     all_vals = torch.cat([p.detach().flatten().cpu()
                           for p in model.parameters()])
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -365,36 +291,53 @@ def weight_histogram(model, bins=50, model_name=None, save_path=None):
 
 def activation_saturation(model, x, bins=50, model_name=None, save_path=None):
     """
-    Histogram the FFN's GeLU activations after a forward pass.
-    For multi-block models, shows all blocks side by side.
+    Histogram the FFN's activations after a forward pass.
+    Intercepts the lambdas returning the activation dynamically.
     """
-    blocks = getattr(model, "blocks", None)
-    if blocks:
-        ffns = [(f"Block {i}", b.ffn) for i, b in enumerate(blocks)]
-    elif hasattr(model, "ffn"):
-        ffns = [("FFN", model.ffn)]
-    else:
-        print("model has no .ffn — nothing to check")
+    if not hasattr(model, "blocks"):
+        print("model has no .blocks — nothing to check")
         return
 
+    intercepted = []
+
+    # Monkeypatch to intercept activations
+    original_acts = []
+    for bi, block in enumerate(model.blocks):
+        orig_fn = block.feedforward.activation
+        original_acts.append(orig_fn)
+
+        def hook(x_val, fn=orig_fn, b_idx=bi):
+            out = fn(x_val)
+            intercepted.append((f"Block {b_idx}", out.detach().cpu().flatten()))
+            return out
+        
+        block.feedforward.activation = hook
+
+    # Forward pass to trigger hooks
     with torch.no_grad():
         model(x)
 
-    n = len(ffns)
+    # Restore originals
+    for bi, block in enumerate(model.blocks):
+        block.feedforward.activation = original_acts[bi]
+
+    if not intercepted:
+        return
+
+    n = len(intercepted)
     fig, axes = plt.subplots(1, n, figsize=(6 * n, 4))
     if n == 1:
         axes = [axes]
 
-    for ax, (label, ffn) in zip(axes, ffns):
-        out = ffn.gelu.out.detach().cpu().flatten()
+    for ax, (label, out) in zip(axes, intercepted):
         suppressed = (out < -0.1).float().mean().item()
         ax.hist(out.numpy(), bins=bins, color=bks.COLORS["teal"])
-        ax.set_title(f"{label} GeLU — "
+        ax.set_title(f"{label} Activation — "
                      f"{suppressed * 100:.1f}% suppressed")
         ax.set_xlabel("Activation value")
         ax.set_ylabel("Count")
 
-    fig.suptitle("FFN GeLU activations")
+    fig.suptitle("FFN Activations")
     plt.tight_layout()
     _save(fig, "activation_saturation.png", model_name, save_path)
 
@@ -406,12 +349,7 @@ def activation_saturation(model, x, bins=50, model_name=None, save_path=None):
 def diagnostic_pass(model, x, y):
     """
     One forward+backward pass retaining gradients on every stage.
-
-    Handles both weight-tied Transformer (current) and museum models
-    with separate LMHead.
-
-    Returns (stages, loss) where stages is a dict {name: tensor}
-    with .grad populated.
+    Mirrors modular_transformer.py's forward structures exactly.
     """
     for p in model.parameters():
         p.grad = None
@@ -420,62 +358,70 @@ def diagnostic_pass(model, x, y):
 
     # embedding (+ positional if present)
     emb = model.embedding(x)
-    if hasattr(model, "positional_encoding"):
-        emb = emb + model.positional_encoding()
-    emb.retain_grad()
-    stages["embedding"] = emb
-
-    # N stacked blocks (Transformer)
-    if hasattr(model, "blocks"):
-        h = emb
-        for i, block in enumerate(model.blocks):
-            attn_out = h + block.multihead(block.ln1(h))
-            attn_out.retain_grad()
-            stages[f"block_{i}_attn"] = attn_out
-
-            ffn_out = attn_out + block.ffn(block.ln2(attn_out))
-            ffn_out.retain_grad()
-            stages[f"block_{i}_ffn"] = ffn_out
-
-            h = ffn_out
-
-        normalized = model.ln(h)
-        normalized.retain_grad()
-        stages["normalized"] = normalized
-        pre_logits = normalized
-
-    # flat models
+    
+    if hasattr(model.positional, "positional_encoding_matrix"):
+        encoded = emb + model.positional()
     else:
-        attn_out = model.multihead(emb)
-        attn_out.retain_grad()
-        stages["attn_out"] = attn_out
+        encoded = emb
+        
+    encoded.retain_grad()
+    stages["encoded"] = encoded
+    
+    h = model.embedding_dropout(encoded)
+    h.retain_grad()
+    stages["post_dropout"] = h
 
-        if hasattr(model, "ffn"):
-            ffn_out = model.ffn(attn_out)
-            ffn_out.retain_grad()
-            stages["ffn_out"] = ffn_out
-            pre_logits = ffn_out
-        else:
-            pre_logits = attn_out
+    # Modular Blocks
+    for i, block in enumerate(model.blocks):
+        if block.cfg.norm_placement == "pre":
+            if block.cfg.residual == "sequential":
+                h_attn = h + block.dropout(block.attention(block.norm1(h)))
+                h_attn.retain_grad()
+                stages[f"b{i}_attn"] = h_attn
+                
+                h_ffn = h_attn + block.dropout(block.feedforward(block.norm2(h_attn)))
+                h_ffn.retain_grad()
+                stages[f"b{i}_ffn"] = h_ffn
+                h = h_ffn
+            elif block.cfg.residual == "parallel":
+                h_par = h + block.dropout(block.attention(block.norm1(h)) + block.feedforward(block.norm1(h)))
+                h_par.retain_grad()
+                stages[f"b{i}_block"] = h_par
+                h = h_par
+                
+        elif block.cfg.norm_placement == "post":
+            if block.cfg.residual == "sequential":
+                h_attn = block.norm1(h + block.dropout(block.attention(h)))
+                h_attn.retain_grad()
+                stages[f"b{i}_attn"] = h_attn
+                
+                h_ffn = block.norm2(h_attn + block.dropout(block.feedforward(h_attn)))
+                h_ffn.retain_grad()
+                stages[f"b{i}_ffn"] = h_ffn
+                h = h_ffn
+            elif block.cfg.residual == "parallel":
+                h_par = block.norm1(h + block.dropout(block.attention(h) + block.feedforward(h)))
+                h_par.retain_grad()
+                stages[f"b{i}_block"] = h_par
+                h = h_par
 
-    # lm head — weight-tied or separate
-    if hasattr(model, "lmhead"):
-        logits = model.lmhead(pre_logits)
-    else:
-        logits = pre_logits @ model.embedding.embedding_matrix.T
+    # Final Norm & Logits
+    normalized = model.final_norm(h)
+    normalized.retain_grad()
+    stages["normalized"] = normalized
+    
+    logits = normalized @ model.embedding.embedding_matrix.T
     logits.retain_grad()
     stages["logits"] = logits
 
-    pad_idx = y.max().item()
     loss = torch.nn.functional.cross_entropy(
-        logits.permute(0, 2, 1), y, ignore_index=pad_idx)
+        logits.permute(0, 2, 1), y, ignore_index=-1)
     loss.backward()
 
     return stages, loss
 
 
 def plot_activation_distributions(stages, model_name=None, save_path=None):
-    """Histogram forward-pass values at each stage."""
     names = list(stages.keys())
     fig, axes = plt.subplots(1, len(names),
                              figsize=(3.2 * len(names), 3))
@@ -493,7 +439,6 @@ def plot_activation_distributions(stages, model_name=None, save_path=None):
 
 
 def plot_activation_gradients(stages, model_name=None, save_path=None):
-    """Histogram dL/d(activation) at each stage."""
     names = list(stages.keys())
     fig, axes = plt.subplots(1, len(names),
                              figsize=(3.2 * len(names), 3))
@@ -516,14 +461,9 @@ def plot_activation_gradients(stages, model_name=None, save_path=None):
 # ═══════════════════════════════════════════════════════════════
 
 def plot_weight_gradients(model, model_name=None, save_path=None):
-    """
-    dL/dW histograms grouped by architectural role.
-    One subplot per group; parameters within a group overlaid.
-    """
     named = get_named_parameters(model)
     groups = get_parameter_groups(named)
 
-    # filter to params with gradients
     groups = OrderedDict(
         (g, [(n, p) for n, p in members if p.grad is not None])
         for g, members in groups.items()
@@ -569,17 +509,9 @@ def plot_weight_gradients(model, model_name=None, save_path=None):
 # ═══════════════════════════════════════════════════════════════
 
 def plot_update_ratios(ud, model, model_name=None, save_path=None):
-    """
-    log10(std(update)/std(data)) per parameter, grouped by role.
-    One subplot per group with the −3 target line.
-
-    `ud` is the list-of-lists from train_model, one inner list per
-    checkpoint, one value per parameter (in model.parameters() order).
-    """
     named = get_named_parameters(model)
     groups = get_parameter_groups(named)
 
-    # build a param id → index map
     params_list = list(model.parameters())
     param_to_idx = {id(p): i for i, p in enumerate(params_list)}
 
@@ -645,47 +577,28 @@ def plot_update_ratios(ud, model, model_name=None, save_path=None):
 # ═══════════════════════════════════════════════════════════════
 
 def run_all_diagnostics(model, results, x, y, model_name):
-    """
-    Run every plot for a single model, saving to
-    PLOT_BASE/<model_name>/.
-
-    model:      the trained model object
-    results:    the dict from train_model()
-    x, y:       a batch of inputs/targets for diagnostic_pass
-    model_name: subfolder name (e.g. "3-Block Transformer")
-    """
     print(f"── {model_name} ──")
 
-    # switch to eval for diagnostics
     if hasattr(model, "eval"):
         model.eval()
 
-    # training curves
     plot_training_curve(results, title=f"Training Loss — {model_name}",
                         model_name=model_name)
     plot_lr_schedule(results, model_name=model_name)
     plot_train_vs_dev(results, model_name=model_name)
 
-    # weight histogram
     weight_histogram(model, model_name=model_name)
-
-    # activation saturation (FFN models only)
     activation_saturation(model, x, model_name=model_name)
 
-    # diagnostic pass → activation/gradient distributions
     stages, loss = diagnostic_pass(model, x, y)
     plot_activation_distributions(stages, model_name=model_name)
     plot_activation_gradients(stages, model_name=model_name)
-
-    # grouped weight gradients
     plot_weight_gradients(model, model_name=model_name)
 
-    # grouped update-to-data ratios
     if "ud" in results and results["ud"]:
         plot_update_ratios(results["ud"], model,
                            model_name=model_name)
 
-    # restore training mode
     if hasattr(model, "train"):
         model.train()
 

@@ -1,17 +1,15 @@
 import torch
 
+from src.model_files.definitions import OptimizerConfig
+
 class AdamW:
-    def __init__(self,
-            parameters,
-            betas=(0.9, 0.999), eps=1e-8,
-            weight_decay=0
-    ):
+    def __init__(self, parameters, cfg: OptimizerConfig):
         self.parameters = list(parameters)
         self.first_moments = [torch.zeros_like(parameter) for parameter in self.parameters]
         self.second_moments = [torch.zeros_like(parameter) for parameter in self.parameters]
-        self.beta1, self.beta2 = betas
-        self.eps = eps
-        self.weight_decay = weight_decay
+        self.beta1, self.beta2 = cfg.betas
+        self.eps = cfg.eps
+        self.weight_decay = cfg.weight_decay
         self.t = 1
 
     def __call__(self, lr):

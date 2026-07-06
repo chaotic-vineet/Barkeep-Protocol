@@ -32,34 +32,6 @@ import math
 import json
 from dataclasses import dataclass
 
-@dataclass
-class TrainConfig:
-    """
-    Shared training hyperparameters. For an ablation, reuse one
-    TrainConfig unchanged across runs — only run_name and the model
-    should differ.
-
-    lr warms up linearly for `warmup_steps`, then follows a cosine
-    schedule from lr_start down to lr_end over the remaining steps.
-    Dev loss is evaluated every `log_interval` steps on a fixed dev
-    batch drawn once per run. log_path=None disables JSONL logging;
-    wandb_project=None disables W&B logging.
-
-    max_norm is the global gradient-clipping threshold and is owned
-    here (not in OptimizerConfig) because clipping is implemented in
-    the training loop.
-    """
-    lr_start: float
-    lr_end: float
-    iterations: int
-    log_interval: int
-    warmup_steps: int
-    batch_size: int = 4096
-    log_path: str | None = None
-    max_norm: float = 1.0
-    wandb_project: str | None = None
-    wandb_entity: str | None = None
-
 def build_run_config(run_name, model, config):
     """
     One flat dict describing this run: model.config_dict(), total

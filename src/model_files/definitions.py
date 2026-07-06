@@ -120,19 +120,23 @@ class ModelConfig:
 @dataclass
 class OptimizerConfig:
     kind: str = "adamw"
-    beta_1: float = 0.9
-    beta_2: float = 0.99
+    betas: tuple = (0.9, 0.99)
     eps: float = 1e-8
-    decay: float = 0.1
+    weight_decay: float = 0.1
     max_norm: float = 1.0
 
 @dataclass
 class TrainingConfig:
-    batch_size: int = 128
-    starting_lr: float = 3e-3
-    ending_lr: float = 3e-4
-    warmup_steps: int = 500
-    num_steps: int = 5000
+    lr_start: float
+    lr_end: float
+    iterations: int
+    log_interval: int
+    warmup_steps: int
+    batch_size: int = 4096
+    log_path: str | None = None
+    max_norm: float = 1.0
+    wandb_project: str | None = None
+    wandb_entity: str | None = None
 
 class Linear:
     """
