@@ -37,8 +37,8 @@ class AdamW:
             first_moment = self.first_moments[idx]
             second_moment = self.second_moments[idx]
 
-            first_moment_hat  = first_moment  / (1 - self.beta1 ** self.t-1)
-            second_moment_hat = second_moment / (1 - self.beta2 ** self.t-1)
+            first_moment_hat  = first_moment  / (1 - self.beta1 ** (self.t-1))
+            second_moment_hat = second_moment / (1 - self.beta2 ** (self.t-1))
 
             step = lr * first_moment_hat / (torch.sqrt(second_moment_hat) + self.eps)
 
