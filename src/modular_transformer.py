@@ -107,25 +107,25 @@ class Block:
     
 
 class Transformer:
-    def __init__(self, model_cfg: ModelConfig, model_hp: HyperParameters):
+    def __init__(self, model_cfg: ModelConfig):
         self.mode = ["Train"]
 
         block_scale = (2 * model_cfg.block.num_blocks) ** -0.5
 
-        self.embedding = Embedding(model_hp)
-        self.embedding_dropout = Dropout(model_hp.dropout_p, self.mode)
+        self.embedding = Embedding(model_cfg.hyperparameters)
+        self.embedding_dropout = Dropout(model_cfg.hyperparameters.dropout_p, self.mode)
         
-        self.positional = build_positional(model_cfg.positional, model_hp, model_cfg.attention.num_heads, model_cfg.attention.dim_k)
+        self.positional = build_positional(model_cfg.positional, model_cfg.hyperparameters, model_cfg.attention.num_heads, model_cfg.attention.dim_k)
         
         self.blocks = [
-            Block(model_cfg, model_hp, idx, self.mode, self.positional, block_scale)
+            Block(model_cfg, model_cfg.hyperparameters, idx, self.mode, self.positional, block_scale)
             for idx in range(model_cfg.block.num_blocks)
         ]
 
-        self.final_norm = build_norm(model_cfg.normalization, model_hp)
+        self.final_norm = build_norm(model_cfg.normalization, model_cfg.hyperparameters)
 
         self.cfg = model_cfg
-        self.hp = model_hp
+        self.hp = model_cfg.hyperparameters
     
     def __call__(self, x:torch.tensor) -> torch.tensor:
         embedded = self.embedding(x)
