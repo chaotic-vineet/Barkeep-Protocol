@@ -48,10 +48,11 @@ from src.model_files.definitions import (
     ModelConfig,
     NormalizationConfig,
     PositionalConfig,
+    TrainingConfig,
 )
 from src.modular_transformer import Transformer
 from src.model_files.optimizer import AdamW
-from src.train import TrainConfig, train_model
+from src.train import train_model
 
 SEED = 42
 
@@ -124,7 +125,7 @@ def main():
     device = args.device or pick_device()
     print(f"device: {device}")
 
-    train_config = TrainConfig(
+    train_config = TrainingConfig(
         lr_start=3e-3,
         lr_end=3e-4,
         iterations=args.iterations,
