@@ -454,167 +454,191 @@ def run_all_diagnostics(model, results, x, y, model_name, out_dir=None):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  ABLATION STUDY (Act 1.3) — needs only the JSONL
+#  ABLATION v2 — seed-aware aggregation
+#
+#  v2 runs are named {config}_s{seed}. These utilities group runs by
+#  base config, aggregate over seeds (mean + min–max band), and put
+#  the measured noise floor next to every effect size.
+#
+#  dev_full (whole-dev-split loss) comes from the per-run results
+#  JSONs in <results_dir>; if absent, falls back to the final
+#  sampled-batch dev loss from the JSONL (noisier — flagged in the
+#  table header).
 # ═══════════════════════════════════════════════════════════════
 
-def _run_label(name, configs):
-    n = configs.get(name, {}).get("num_params")
-    return f"{name} ({n / 1e6:.2f}M)" if n else name
+def _split_seed(run_name):
+    base, _, seed = run_name.rpartition("_s")
+    return (base, int(seed)) if base and seed.isdigit() else (run_name, None)
 
 
-def plot_ablation_dev_curves(abl, model_name=None, save_path=None):
-    """All dev curves overlaid; anchors solid, strips dashed."""
-    runs, configs = abl["runs"], abl["configs"]
-    fig, ax = plt.subplots(figsize=(10, 6))
-    for i, (name, run) in enumerate(runs.items()):
-        style = dict(linewidth=2.2) if name in ("baseline", "modern_full") \
-            else dict(linewidth=1.4, linestyle="--")
-        ax.plot(run["steps"], run["dev_loss"], marker="D", markersize=4,
-                color=PALETTE[i % len(PALETTE)],
-                label=_run_label(name, configs), **style)
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Dev loss")
-    ax.set_title("Ablation — dev loss (solid: anchors, dashed: strips)")
-    ax.legend(fontsize=9)
-    _save(fig, "ablation_dev_curves.png", model_name, save_path)
-
-
-def plot_ablation_gap_to_reference(abl, reference="modern_full",
-                                   model_name=None, save_path=None):
-    """Dev loss minus the reference's at every checkpoint: when effects open."""
-    runs, configs = abl["runs"], abl["configs"]
-    ref = runs[reference]
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for i, (name, run) in enumerate(runs.items()):
-        if name == reference:
-            continue
-        assert run["steps"] == ref["steps"], f"{name}: checkpoint mismatch"
-        ax.plot(run["steps"],
-                [d - r for d, r in zip(run["dev_loss"], ref["dev_loss"])],
-                marker="D", markersize=4, color=PALETTE[i % len(PALETTE)],
-                label=_run_label(name, configs), linewidth=1.6)
-    ax.axhline(0, color=bks.COLORS["text_mid"], linestyle="--", alpha=0.5,
-               linewidth=1, label=f"{reference} (reference)")
-    ax.set_xlabel("Step")
-    ax.set_ylabel(f"Dev loss − {reference}")
-    ax.set_title(f"Gap to {reference} over training")
-    ax.legend(fontsize=9)
-    _save(fig, "ablation_gap_to_reference.png", model_name, save_path)
-
-
-def plot_ablation_strip_deltas(abl, reference="modern_full",
-                               model_name=None, save_path=None):
+def load_ablation_v2(log_path, results_dir=None):
     """
-    Final dev-loss penalty of removing each axis, annotated with the
-    parameter delta each strip carries — the strips are NOT iso-param,
-    and the plot keeps that confound visible.
+    Group a v2 JSONL by base config. Returns
+        {"configs_grouped": {base: {"seeds": {seed: run_curves},
+                                    "dev_full": {seed: float} | {},
+                                    "num_params": int}},
+         "used_dev_full": bool}
+    Curve dict per seed is the load_log metric structure.
     """
-    runs, configs = abl["runs"], abl["configs"]
-    ref_loss = runs[reference]["dev_loss"][-1]
-    ref_params = configs[reference]["num_params"]
+    log = load_log(log_path)
+    grouped = OrderedDict()
 
-    names = [n for n in runs if n in AXIS_LABELS]
-    deltas = [runs[n]["dev_loss"][-1] - ref_loss for n in names]
-    dparams = [configs[n]["num_params"] - ref_params for n in names]
+    for run_name, curves in log["runs"].items():
+        base, seed = _split_seed(run_name)
+        g = grouped.setdefault(base, {"seeds": OrderedDict(), "dev_full": {},
+                                      "num_params": None})
+        g["seeds"][seed] = curves
+        cfg = log["configs"].get(run_name, {})
+        g["num_params"] = cfg.get("num_params", g["num_params"])
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.bar([AXIS_LABELS[n] for n in names], deltas,
-                  color=PALETTE[:len(names)])
-    for bar, delta, dp in zip(bars, deltas, dparams):
-        off = 0.004 if delta >= 0 else -0.004
-        ax.text(bar.get_x() + bar.get_width() / 2, delta + off,
-                f"{delta:+.4f}\n(Δ params {dp:+,})", ha="center",
-                va="bottom" if delta >= 0 else "top", fontsize=9)
-    ax.axhline(0, color=bks.COLORS["text_mid"], linewidth=1, alpha=0.5)
-    pad = max(abs(d) for d in deltas) * 0.35
-    ax.set_ylim(min(min(deltas), 0) - pad, max(max(deltas), 0) + pad)
-    ax.set_ylabel(f"Final dev loss − {reference}")
-    ax.set_title("Leave-one-out: penalty for removing each axis\n"
-                 "(positive = the axis was helping)")
-    _save(fig, "ablation_strip_deltas.png", model_name, save_path)
+        if results_dir is not None:
+            path = os.path.join(results_dir, f"{run_name}.json")
+            if os.path.exists(path):
+                with open(path) as f:
+                    g["dev_full"][seed] = json.load(f)["dev_full"]
 
+    used_dev_full = all(g["dev_full"] for g in grouped.values())
+    if not used_dev_full:
+        for g in grouped.values():  # fallback: final sampled dev loss
+            g["dev_full"] = {s: c["dev_loss"][-1] for s, c in g["seeds"].items()}
 
-def plot_ablation_loss_vs_params(abl, model_name=None, save_path=None):
-    """Final dev loss vs parameter count — the size confound, plotted."""
-    runs, configs = abl["runs"], abl["configs"]
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for i, (name, run) in enumerate(runs.items()):
-        n = configs[name]["num_params"]
-        ax.scatter(n / 1e6, run["dev_loss"][-1],
-                   color=PALETTE[i % len(PALETTE)], s=70, zorder=5, marker="D")
-        ax.annotate(name, (n / 1e6, run["dev_loss"][-1]),
-                    textcoords="offset points", xytext=(8, 5), fontsize=9)
-    ax.set_xlabel("Parameters (millions)")
-    ax.set_ylabel("Final dev loss")
-    ax.set_title("Loss vs size — strips are not iso-param")
-    _save(fig, "ablation_loss_vs_params.png", model_name, save_path)
+    order = [n for n in RUN_ORDER if n in grouped]
+    ordered = OrderedDict((n, grouped.pop(n)) for n in order)
+    ordered.update(grouped)
+    return {"configs_grouped": ordered, "used_dev_full": used_dev_full}
 
 
-def plot_ablation_train_dev_grid(abl, model_name=None, save_path=None):
-    """Small multiples: train vs dev per run; generalization gap at a glance."""
-    runs = abl["runs"]
-    fig, axes = _grid(len(runs), w=5, h=3.6, sharex=True, sharey=True)
-    for ax, (name, run) in zip(axes, runs.items()):
-        ax.plot(run["steps"], run["train_loss"], marker=".",
-                color=bks.COLORS["amber"], label="train")
-        ax.plot(run["steps"], run["dev_loss"], marker="D", markersize=4,
-                color=bks.COLORS["red"], label="dev")
-        gap = run["dev_loss"][-1] - run["train_loss"][-1]
-        ax.set_title(f"{name}  (final gap {gap:+.3f})", fontsize=10)
-        ax.legend(fontsize=8)
-    fig.suptitle("Train vs dev at checkpoints, per run", y=1.0)
-    plt.tight_layout()
-    _save(fig, "ablation_train_dev_grid.png", model_name, save_path)
+def _stats(vals):
+    m = sum(vals) / len(vals)
+    return m, min(vals), max(vals), max(vals) - min(vals)
 
 
-def plot_ablation_grad_norms(abl, model_name=None, save_path=None):
-    """Pre-clip global gradient norm at checkpoints, all runs."""
-    runs = abl["runs"]
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    for i, (name, run) in enumerate(runs.items()):
-        if any(g is None for g in run["grad_norm"]):
-            continue
-        ax.plot(run["steps"], run["grad_norm"], marker=".",
-                color=PALETTE[i % len(PALETTE)], label=name, linewidth=1.4)
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Global grad norm (pre-clip)")
-    ax.set_title("Gradient norms at checkpoints")
-    ax.legend(fontsize=9)
-    _save(fig, "ablation_grad_norms.png", model_name, save_path)
+def print_ablation_v2_table(abl2, reference="modern_full"):
+    grouped = abl2["configs_grouped"]
+    metric = "full-dev loss" if abl2["used_dev_full"] else \
+             "final SAMPLED dev loss (dev_full unavailable — noisier)"
+    ref_mean = _stats(list(grouped[reference]["dev_full"].values()))[0] \
+        if reference in grouped else None
 
-
-def print_ablation_table(abl, reference="modern_full"):
-    """The summary table, recomputed from the metric records."""
-    runs, configs = abl["runs"], abl["configs"]
-    ref_loss = runs[reference]["dev_loss"][-1] if reference in runs else None
-
-    header = (f"{'run':<22}{'params':>12}{'final dev':>12}"
-              f"{'best dev':>12}{'@step':>8}{'vs ref':>10}")
+    print(f"metric: {metric}")
+    header = (f"{'config':<22}{'params':>12}{'mean':>10}{'min':>9}"
+              f"{'max':>9}{'spread':>9}{'n':>4}{'Δ vs ref':>10}")
     print(header)
     print("-" * len(header))
-    for name, run in runs.items():
-        best = min(run["dev_loss"])
-        vs = "ref" if name == reference else (
-            f"{run['dev_loss'][-1] - ref_loss:+.4f}" if ref_loss else "")
-        print(f"{name:<22}{configs[name]['num_params']:>12,}"
-              f"{run['dev_loss'][-1]:>12.4f}{best:>12.4f}"
-              f"{run['steps'][run['dev_loss'].index(best)]:>8,}{vs:>10}")
+    rows = {}
+    for name, g in grouped.items():
+        m, lo, hi, spread = _stats(list(g["dev_full"].values()))
+        rows[name] = (m, lo, hi, spread)
+        d = "ref" if name == reference else (
+            f"{m - ref_mean:+.4f}" if ref_mean is not None else "")
+        print(f"{name:<22}{g['num_params']:>12,}{m:>10.4f}{lo:>9.4f}"
+              f"{hi:>9.4f}{spread:>9.4f}{len(g['dev_full']):>4}{d:>10}")
+
+    # non-additivity check on means, with the noise floor beside it
+    strips = [n for n in grouped if n in AXIS_LABELS]
+    if strips and reference in rows and "baseline" in rows:
+        delta_sum = sum(rows[n][0] - rows[reference][0] for n in strips)
+        gap = rows["baseline"][0] - rows[reference][0]
+        max_spread = max(r[3] for r in rows.values())
+        print(f"\nsum of strip deltas (means): {delta_sum:+.4f} | "
+              f"baseline−{reference} gap: {gap:+.4f} | "
+              f"discrepancy: {delta_sum - gap:+.4f} | "
+              f"largest per-config spread: {max_spread:.4f}")
+    return rows
 
 
-def analyze_ablation(log_path, out_dir=None, reference="modern_full"):
-    """Load the ablation JSONL, print the table, save every plot."""
-    abl = load_log(log_path)
-    print_ablation_table(abl, reference=reference)
+def plot_ablation_v2_dev_bands(abl2, model_name=None, save_path=None):
+    """Per config: mean dev curve across seeds with a min–max band."""
+    grouped = abl2["configs_grouped"]
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for i, (name, g) in enumerate(grouped.items()):
+        color = PALETTE[i % len(PALETTE)]
+        seed_curves = list(g["seeds"].values())
+        steps = seed_curves[0]["steps"]
+        assert all(c["steps"] == steps for c in seed_curves), f"{name}: step mismatch"
+        per_step = list(zip(*[c["dev_loss"] for c in seed_curves]))
+        mean = [sum(v) / len(v) for v in per_step]
+        style = dict(linewidth=2.2) if name in ("baseline", "modern_full") \
+            else dict(linewidth=1.4, linestyle="--")
+        ax.plot(steps, mean, marker="D", markersize=3.5, color=color,
+                label=f"{name} (n={len(seed_curves)})", **style)
+        ax.fill_between(steps, [min(v) for v in per_step],
+                        [max(v) for v in per_step], color=color, alpha=0.15)
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Dev loss (sampled batch)")
+    ax.set_title("Dev loss — mean over seeds, min–max band")
+    ax.legend(fontsize=9)
+    _save(fig, "ablation_v2_dev_bands.png", model_name, save_path)
 
-    base = out_dir or os.path.join(PLOT_BASE, "ablation_1_3")
+
+def plot_ablation_v2_seed_clouds(abl2, model_name=None, save_path=None):
+    """
+    Every seed's headline loss as a point, per config — effect vs noise
+    read directly: disjoint clouds are real effects, interleaved clouds
+    are inside the noise floor.
+    """
+    grouped = abl2["configs_grouped"]
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    for i, (name, g) in enumerate(grouped.items()):
+        color = PALETTE[i % len(PALETTE)]
+        vals = list(g["dev_full"].values())
+        ax.scatter([i] * len(vals), vals, color=color, s=55, marker="D", zorder=5)
+        m = sum(vals) / len(vals)
+        ax.hlines(m, i - 0.22, i + 0.22, color=color, linewidth=2)
+    ax.set_xticks(range(len(grouped)))
+    ax.set_xticklabels(grouped.keys(), rotation=20, ha="right", fontsize=9)
+    ax.set_ylabel("Full-dev loss" if abl2["used_dev_full"] else "Final sampled dev loss")
+    ax.set_title("Per-seed results — clouds vs noise floor (bar = mean)")
+    _save(fig, "ablation_v2_seed_clouds.png", model_name, save_path)
+
+
+def plot_ablation_v2_strip_deltas(abl2, reference="modern_full",
+                                  model_name=None, save_path=None):
+    """
+    Mean strip penalty per axis with whiskers spanning the min–max of
+    per-seed deltas (each seed's value minus the reference MEAN).
+    Whiskers crossing zero = effect inside the measured noise.
+    """
+    grouped = abl2["configs_grouped"]
+    ref_mean = _stats(list(grouped[reference]["dev_full"].values()))[0]
+    ref_params = grouped[reference]["num_params"]
+
+    names = [n for n in grouped if n in AXIS_LABELS]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for i, name in enumerate(names):
+        vals = [v - ref_mean for v in grouped[name]["dev_full"].values()]
+        m, lo, hi, _ = _stats(vals)
+        color = PALETTE[i % len(PALETTE)]
+        ax.bar(i, m, color=color, width=0.6)
+        ax.vlines(i, lo, hi, color=bks.COLORS["text_bright"], linewidth=1.5)
+        dp = grouped[name]["num_params"] - ref_params
+        ax.text(i, hi + 0.004, f"{m:+.4f}\n(Δ params {dp:+,})",
+                ha="center", va="bottom", fontsize=9)
+    ax.axhline(0, color=bks.COLORS["text_mid"], linewidth=1, alpha=0.5)
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels([AXIS_LABELS[n] for n in names])
+    ax.set_ylabel(f"Loss − {reference} (mean, min–max whiskers)")
+    ax.set_title("Leave-one-out penalties with measured noise\n"
+                 "(whisker crossing zero = inside the noise floor)")
+    ymin, ymax = ax.get_ylim()
+    ax.set_ylim(ymin - 0.01, ymax + 0.03)
+    _save(fig, "ablation_v2_strip_deltas.png", model_name, save_path)
+
+
+def analyze_ablation_v2(log_path, results_dir=None, out_dir=None,
+                        reference="modern_full"):
+    """
+    The v2 driver: seed-grouped table + the three cross-run figures.
+    results_dir should hold the per-run {run}.json files (for dev_full).
+    """
+    abl2 = load_ablation_v2(log_path, results_dir)
+    print_ablation_v2_table(abl2, reference=reference)
+
+    base = out_dir or os.path.join(PLOT_BASE, "ablation_1_3_v2")
     path = lambda f: os.path.join(base, f)
-
-    plot_ablation_dev_curves(abl, save_path=path("ablation_dev_curves.png"))
-    plot_ablation_gap_to_reference(abl, reference, save_path=path("ablation_gap_to_reference.png"))
-    plot_ablation_strip_deltas(abl, reference, save_path=path("ablation_strip_deltas.png"))
-    plot_ablation_loss_vs_params(abl, save_path=path("ablation_loss_vs_params.png"))
-    plot_ablation_train_dev_grid(abl, save_path=path("ablation_train_dev_grid.png"))
-    plot_ablation_grad_norms(abl, save_path=path("ablation_grad_norms.png"))
-
+    plot_ablation_v2_dev_bands(abl2, save_path=path("ablation_v2_dev_bands.png"))
+    plot_ablation_v2_seed_clouds(abl2, save_path=path("ablation_v2_seed_clouds.png"))
+    plot_ablation_v2_strip_deltas(abl2, reference,
+                                  save_path=path("ablation_v2_strip_deltas.png"))
     print(f"\nplots saved to {base}")
-    return abl
+    return abl2
